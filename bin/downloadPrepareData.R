@@ -6,6 +6,7 @@ suppressPackageStartupMessages({
   library(R.utils)
   library(dplyr)
   library(tibble)
+  library(stringr)
 })
 
 ### FUNCTION ###
@@ -33,6 +34,8 @@ dir.create(data.output.dir)
 gds <- getGEO(GEO = GEOid, destdir = raw.data.dir, GSEMatrix = TRUE)
 getGEOSuppFiles(GEO = GEOid, baseDir = raw.data.dir) # supplementray file download
 # getGEOfile(GEO = GEOid, destdir = raw.data.dir) # soft format files download
+file.remove(file.path(raw.data.dir, GEOid, "GSE127465_human_counts_normalized_54773x41861.mtx.gz"), 
+            file.path(raw.data.dir, GEOid, "GSE127465_mouse_counts_normalized_15939x28205.mtx.gz"))
 
 
 flog.debug("Prepare data input for downstream analysis")
@@ -52,9 +55,33 @@ colnames(pdata.mouse) <- c("geo_accession", "organism", "strain", "source", "tum
                            "purification", "age_at_tumor_injection", "age_at_sacrifice", "gender")
 saveRDS(pdata.mouse, file.path(data.input.dir, "pdata.mouse.RDS"))
 
+
+ls.metadata <- list.files(path = file.path(raw.data.dir, GEOid), pattern = "GSE")
+ls.metadata <- ls.metadata[-5]
+
+for (f in ls.metadata) {
+  flog.debug(paste0("Unpacking the following file: ", f))
+  gunzip(filename = file.path(raw.data.dir, GEOid, f))
+}
+
+ls.metadata <- list.files(path = file.path(raw.data.dir, GEOid), pattern = "GSE")
+ls.metadata <- ls.metadata[-5]
+
+for (f in ls.metadata) {
+  print(f)
+  temp.file.name <- substring(f, 11, (nchar(f)-4))
+  temp.file <- read.table(file.path(raw.data.dir, GEOid, f), fill = TRUE, header = TRUE, sep = "\t")
+  assign(temp.file.name, temp.file)
+}
+
+saveRDS(human_cell_metadata_54773x25, file.path(data.input.dir, "human.metadata.RDS"))
+saveRDS(mouse_cell_metadata_15939x12, file.path(data.input.dir, "mouse.metadata.RDS"))
+
+# subset count matrix to those cells that are annotated by authors
+
+
 flog.debug("Count data")
 # untar data files
-
 # system("defaults write org.R-project.R force.LANG en_US.UTF-8")
 # untar(tarfile = file.path(raw.data.dir, GEOid, "GSE127465_RAW.tar"), list = TRUE)
 untar(tarfile = file.path(raw.data.dir, GEOid, "GSE127465_RAW.tar"),
@@ -68,15 +95,99 @@ for (f in count.data.files) {
   gunzip(filename = file.path(raw.data.dir, GEOid, f))
 }
 
-# test
-data <- read.table(file.path(raw.data.dir, GEOid, "GSM3635278_human_p1t1_raw_counts.tsv"))
-data <- t(data)
-data <- header.true(data)
-rownames(data) <- NULL
-data <- column_to_rownames(data, "barcode")
-data2 <- data[, 1:25]
-# filter count data frames to select those cells with enough features
-# understand files with metadata, do they how annotated cells?
+samples.ls <- list.files(
+  path = file.path(raw.data.dir, GEOid),
+  pattern = "_raw_counts.tsv")
+
+
+flog.debug("Count data for human samples")
+
+human.samples.ls <- samples.ls[str_detect(samples.ls, pattern = "human")]
+human.samples.id <- c()
+for (f in human.samples.ls) {
+  temp.file.name = substring(f, 1, 10)
+  human.samples.id <- c(human.samples.id, temp.file.name)
+}
+
+human.samples.id <- setNames(vector("list", length(human.samples.id)), human.samples.id)
+
+for (f in human.samples.ls) {
+  temp.file.name = substring(f, 1, 10)
+  flog.debug(paste("Processing sample", temp.file.name, sep = " "))
+  temp.file <- read.table(file.path(raw.data.dir, GEOid, f))
+  temp.file <- t(temp.file)
+  temp.file <- header.true(temp.file)
+  rownames(temp.file) <- NULL
+  temp.file <- column_to_rownames(temp.file, "barcode")
+  temp.colnames <- paste0(temp.file.name, "_", colnames(temp.file))
+  colnames(temp.file) <- temp.colnames
+  temp.file <- as.matrix(temp.file)
+  saveRDS(temp.file, file.path(data.input.dir, paste0(temp.file.name, ".RDS")))
+  human.samples.id[[temp.file.name]] <- temp.file
+  rm(temp.file)
+}
+
+saveRDS(human.samples.id, file.path(data.input.dir, "ls.countMatrix.human.RDS"))
+
+
+flog.debug("Master count matrix for human samples")
+
+df <- human.samples.id[[1]]
+for (i in 2:length(human.samples.id)) {
+  df <- merge(df, human.samples.id[[i]], by = row.names, all = TRUE)
+  rownames(df) <- df$Row.names
+  df <- df[, !(names(df) %in% "Row.names")]
+}
+
+human.count.matrix <- as.matrix(df)
+
+saveRDS(human.count.matrix, file.path(data.input.dir, "countMatrix.human.RDS"))
+
+
+flog.debug("Count data for mouse samples")
+
+mouse.samples.ls <- samples.ls[str_detect(samples.ls, pattern = "mouse")]
+mouse.samples.id <- c()
+for (f in mouse.samples.ls) {
+  temp.file.name = substring(f, 1, 10)
+  mouse.samples.id <- c(mouse.samples.id, temp.file.name)
+}
+
+mouse.samples.id <- setNames(vector("list", length(mouse.samples.id)), mouse.samples.id)
+
+for (f in mouse.samples.id) {
+  temp.file.name = substring(f, 1, 10)
+  flog.debug(paste("Processing sample", temp.file.name, sep = " "))
+  temp.file <- read.table(file.path(raw.data.dir, GEOid, f))
+  temp.file <- t(temp.file)
+  temp.file <- header.true(temp.file)
+  rownames(temp.file) <- NULL
+  temp.file <- column_to_rownames(temp.file, "barcode")
+  temp.colnames <- paste0(temp.file.name, "_", colnames(temp.file))
+  colnames(temp.file) <- temp.colnames
+  temp.file <- as.matrix(temp.file)
+  saveRDS(temp.file, file.path(data.input.dir, paste0(temp.file.name, ".RDS")))
+  mouse.samples.id[[temp.file.name]] <- temp.file
+  rm(temp.file)
+}
+
+saveRDS(mouse.samples.id, file.path(data.input.dir, "ls.countMatrix.mouse.RDS"))
+
+
+flog.debug("Master count matrix for mouse samples")
+
+df <- mouse.samples.id[[1]]
+for (i in 2:length(mouse.samples.id)) {
+  df <- merge(df, mouse.samples.id[[i]], by = row.names, all = TRUE)
+  rownames(df) <- df$Row.names
+  df <- df[, !(names(df) %in% "Row.names")]
+}
+
+mouse.count.matrix <- as.matrix(df)
+
+saveRDS(mouse.count.matrix, file.path(data.input.dir, "countMatrix.mouse.RDS"))
+
 
 ### SESSION INFO ###
+flog.debug("SessionInfo")
 sessionInfo()
